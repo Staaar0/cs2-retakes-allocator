@@ -46,6 +46,8 @@ public class RetakesAllocator : BasePlugin
     private string _bombsite = "";
     private bool _announceBombsite;
     private bool _bombsiteAnnounceOneTime;
+    private const float BombsiteAnnounceInterval = 0.25f;
+    private float _nextBombsiteAnnounce;
 
     #region Setup
 
@@ -144,9 +146,11 @@ public class RetakesAllocator : BasePlugin
         RoundTypeManager.Instance.Initialize();
 
         _allocatedPlayerItems.Clear();
+        Queries.ClearCache();
         _bombsite = "";
         _announceBombsite = false;
         _bombsiteAnnounceOneTime = false;
+        _nextBombsiteAnnounce = 0;
     }
 
     private void HandleHotReload()
@@ -505,7 +509,63 @@ public class RetakesAllocator : BasePlugin
             return HookResult.Continue;
         }
 
+        if (IsReissueOfRoundAllocation(player, item, itemDefinitionIndex))
+        {
+            return HookResult.Continue;
+        }
+
         return RetStop();
+    }
+
+    /// <summary>
+    /// Skin plugins (WeaponSkins, WeaponPaints) refresh a weapon by deleting it and giving the
+    /// same weapon straight back. Blocking that give leaves the player empty-handed, most often
+    /// with the AWP, which is always blocked above. Allow it when the item is exactly what this
+    /// plugin allocated to the player this round and the player's own copy no longer exists
+    /// anywhere, so dropping the weapon and buying it again still cannot duplicate it.
+    /// </summary>
+    private bool IsReissueOfRoundAllocation(CCSPlayerController player, CsItem? item, ushort itemDefinitionIndex)
+    {
+        if (item is null)
+        {
+            return false;
+        }
+
+        var slotType = WeaponHelpers.GetSlotTypeForItem(item);
+        if (slotType is null || GetPlayerRoundAllocation(player, slotType) != item)
+        {
+            return false;
+        }
+
+        // Still holding it: the game would refuse anyway, and there is nothing to re-issue.
+        var ownWeapons = player.PlayerPawn.Value?.WeaponServices?.MyWeapons;
+        if (ownWeapons is not null)
+        {
+            foreach (var handle in ownWeapons)
+            {
+                var owned = handle.Value;
+                if (owned is not null && owned.IsValid &&
+                    owned.AttributeManager.Item.ItemDefinitionIndex == itemDefinitionIndex)
+                {
+                    return false;
+                }
+            }
+        }
+
+        // The weapon was dropped or handed to a teammate rather than deleted.
+        var accountId = (uint) (player.SteamID & 0xFFFFFFFF);
+        foreach (var weapon in Utilities.FindAllEntitiesByDesignerName<CBasePlayerWeapon>("weapon_"))
+        {
+            if (weapon.IsValid &&
+                weapon.AttributeManager.Item.ItemDefinitionIndex == itemDefinitionIndex &&
+                weapon.OriginalOwnerXuidLow == accountId)
+            {
+                return false;
+            }
+        }
+
+        Log.Debug($"Allowing re-issue of {item} to {player.Slot}");
+        return true;
     }
 
     [GameEventHandler]
@@ -753,12 +813,15 @@ public class RetakesAllocator : BasePlugin
             _advancedGunMenu.OnTick();
         }
 
-        if (_announceBombsite)
+        // The center message stays up for several seconds per send, so there is no need to
+        // re-send it (and rescan the entity list) on every tick.
+        if (_announceBombsite && Server.CurrentTime >= _nextBombsiteAnnounce)
         {
-            var playerEntities = Utilities.FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller");
-            var countct = Utilities.GetPlayers()
+            _nextBombsiteAnnounce = Server.CurrentTime + BombsiteAnnounceInterval;
+            var playerEntities = Utilities.GetPlayers();
+            var countct = playerEntities
                 .Count(p => p.TeamNum == (int) CsTeam.CounterTerrorist && p.PawnIsAlive && !p.IsHLTV);
-            var countt = Utilities.GetPlayers()
+            var countt = playerEntities
                 .Count(p => p.TeamNum == (int) CsTeam.Terrorist && p.PawnIsAlive && !p.IsHLTV);
             string image = _bombsite == "A" ? Translator.Instance["BombSite.A"] :
                 _bombsite == "B" ? Translator.Instance["BombSite.B"] : "";
@@ -861,6 +924,7 @@ public class RetakesAllocator : BasePlugin
                                 {
                                     _bombsiteAnnounceOneTime = true;
                                     _announceBombsite = true;
+                                    _nextBombsiteAnnounce = 0;
                                     AddTimer(Configs.GetConfigData().BombSiteAnnouncementCenterShowTimer, () =>
                                     {
                                         _bombsite = "";
@@ -893,6 +957,7 @@ public class RetakesAllocator : BasePlugin
                                 {
                                     _bombsiteAnnounceOneTime = true;
                                     _announceBombsite = true;
+                                    _nextBombsiteAnnounce = 0;
                                     AddTimer(Configs.GetConfigData().BombSiteAnnouncementCenterShowTimer, () =>
                                     {
                                         _bombsite = "";
@@ -925,6 +990,14 @@ public class RetakesAllocator : BasePlugin
     [GameEventHandler]
     public HookResult OnEventPlayerDisconnect(EventPlayerDisconnect @event, GameEventInfo info)
     {
+        // Settings are cached while the player is here; re-read them if they come back, since
+        // they may have changed them on another server that shares the database.
+        var disconnectedSteamId = Helpers.GetSteamId(@event.Userid);
+        if (disconnectedSteamId != 0)
+        {
+            Queries.ForgetUser(disconnectedSteamId);
+        }
+
         if (!string.IsNullOrEmpty(Configs.GetConfigData().InGameGunMenuCenterCommands))
         {
             _advancedGunMenu.OnEventPlayerDisconnect(@event, info);
