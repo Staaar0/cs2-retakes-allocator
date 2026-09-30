@@ -1,4 +1,4 @@
-﻿name: Build RetakesAllocator.zip
+name: Build RetakesAllocator.zip
 
 on:
   push:
@@ -62,4 +62,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$RELEASE_TAG" "cs2-retakes-allocator-${RELEASE_TAG}.zip"
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$RELEASE_TAG" "cs2-retakes-allocator-${RELEASE_TAG}.zip" --repo "$GH_REPO"
