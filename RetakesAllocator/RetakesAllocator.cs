@@ -300,20 +300,34 @@ public class RetakesAllocator : BasePlugin
             return;
         }
 
-        var result = Task.Run(async () =>
+        var currentRoundType = RoundTypeManager.Instance.GetCurrentRoundType();
+        _ = Task.Run(async () =>
         {
-            var currentPreferredSetting = (await Queries.GetUserSettings(playerId))
-                ?.GetWeaponPreference(currentTeam, WeaponAllocationType.Preferred);
+            try
+            {
+                var currentPreferredSetting = (await Queries.GetUserSettings(playerId))
+                    ?.GetWeaponPreference(currentTeam, WeaponAllocationType.Preferred);
 
-            return await OnWeaponCommandHelper.HandleAsync(
-                new List<string> {CsItem.AWP.ToString()},
-                playerId,
-                RoundTypeManager.Instance.GetCurrentRoundType(),
-                currentTeam,
-                currentPreferredSetting is not null
-            );
-        }).Result;
-        Helpers.WriteNewlineDelimited(result.Item1, commandInfo.ReplyToCommand);
+                var result = await OnWeaponCommandHelper.HandleAsync(
+                    new List<string> {CsItem.AWP.ToString()},
+                    playerId,
+                    currentRoundType,
+                    currentTeam,
+                    currentPreferredSetting is not null
+                );
+                Server.NextFrame(() =>
+                {
+                    if (!_stopping && Helpers.PlayerIsValid(player) && Helpers.GetSteamId(player) == playerId)
+                    {
+                        Helpers.WriteNewlineDelimited(result.Item1, player.PrintToChat);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Failed to update AWP preference: {ex}");
+            }
+        });
     }
 
     [ConsoleCommand("css_removegun")]
